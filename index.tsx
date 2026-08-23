@@ -27,7 +27,7 @@ const settings = definePluginSettings({
     },
     nodePath: {
         displayName: "Node executable",
-        description: "Node.js 22 or newer used for the isolated shared-store broker. Leave empty to discover Homebrew or /usr/local Node.",
+        description: "Node.js 22 or newer used for the isolated shared-store broker. Leave empty to discover it on PATH.",
         type: OptionType.STRING,
         default: "",
         placeholder: "/opt/homebrew/bin/node"

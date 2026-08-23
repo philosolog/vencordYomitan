@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { ChildProcess, spawn } from "node:child_process";
+import { ChildProcess, execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -20,6 +20,26 @@ const DEFAULT_BUILD_DIRECTORY = "yomitan-vencord-electron";
 const STAGED_EXTENSION_DIRECTORY = join(DATA_DIR, "YomitanExtension", "current");
 const STATUS_PATH = join(DATA_DIR, "YomitanExtension", "status.json");
 const settingsWindows = new Set<BrowserWindow>();
+
+function defaultStoreRoot() {
+    switch (process.platform) {
+        case "win32":
+            return join(process.env.APPDATA || join(homedir(), "AppData", "Roaming"), "Yomitan");
+        case "darwin":
+            return join(homedir(), "Library", "Application Support", "Yomitan");
+        default:
+            return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "Yomitan");
+    }
+}
+
+function which(command: string) {
+    return new Promise<string | null>(resolveWhich => {
+        execFile(process.platform === "win32" ? "where" : "which", [command], (error, stdout) => {
+            const [first] = stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+            resolveWhich(error || !first ? null : first);
+        });
+    });
+}
 
 export interface YomitanStatus {
     state: "idle" | "starting" | "ready" | "error";
@@ -38,7 +58,7 @@ let status: YomitanStatus = {
     extensionId: null,
     extensionVersion: null,
     brokerPort: null,
-    sharedStoreRoot: join(homedir(), "Library", "Application Support", "Yomitan"),
+    sharedStoreRoot: defaultStoreRoot(),
     contentScripts: [],
     error: null
 };
@@ -156,7 +176,14 @@ async function stageArtifact(artifactPath: string) {
 
 async function resolveNodeExecutable() {
     const configured = String(pluginSettings().nodePath ?? "").trim();
-    const candidates = [configured, process.env.YOMITAN_NODE ?? "", "/opt/homebrew/bin/node", "/usr/local/bin/node"]
+    const onPath = await which(process.platform === "win32" ? "node.exe" : "node");
+    const platformFallbacks = process.platform === "win32"
+        ? [
+            process.env.ProgramFiles ? join(process.env.ProgramFiles, "nodejs", "node.exe") : "",
+            process.env["ProgramFiles(x86)"] ? join(process.env["ProgramFiles(x86)"], "nodejs", "node.exe") : ""
+        ]
+        : ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"];
+    const candidates = [configured, process.env.YOMITAN_NODE ?? "", onPath ?? "", ...platformFallbacks]
         .filter(Boolean)
         .map(path => resolve(path));
     for (const candidate of candidates) {
