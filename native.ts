@@ -174,6 +174,12 @@ async function stageArtifact(artifactPath: string) {
     await rename(temporary, STAGED_EXTENSION_DIRECTORY);
 }
 
+function supportsSqlite(nodePath: string) {
+    return new Promise<boolean>(resolveSupport => {
+        execFile(nodePath, ["-e", "require(\"node:sqlite\")"], error => resolveSupport(!error));
+    });
+}
+
 async function resolveNodeExecutable() {
     const configured = String(pluginSettings().nodePath ?? "").trim();
     const onPath = await which(process.platform === "win32" ? "node.exe" : "node");
@@ -183,13 +189,21 @@ async function resolveNodeExecutable() {
             process.env["ProgramFiles(x86)"] ? join(process.env["ProgramFiles(x86)"], "nodejs", "node.exe") : ""
         ]
         : ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"];
+    // GUI apps like Discord don't inherit a login shell's PATH, so `which`/`where`
+    // can resolve to a stale system Node that predates node:sqlite (added in 22.5).
+    // Every candidate is verified rather than trusting the first one that exists.
     const candidates = [configured, process.env.YOMITAN_NODE ?? "", onPath ?? "", ...platformFallbacks]
         .filter(Boolean)
         .map(path => resolve(path));
+    let foundOutdated = false;
     for (const candidate of candidates) {
-        if (await pathExists(candidate)) return candidate;
+        if (!await pathExists(candidate)) continue;
+        if (await supportsSqlite(candidate)) return candidate;
+        foundOutdated = true;
     }
-    throw new Error("Node.js 22 or newer was not found; set Node executable in the Yomitan plugin settings");
+    throw new Error(foundOutdated
+        ? "Only Node.js builds older than 22.5 (without node:sqlite) were found; set a newer Node executable in the Yomitan plugin settings"
+        : "Node.js 22 or newer was not found; set Node executable in the Yomitan plugin settings");
 }
 
 async function startBroker(projectRoot: string, token: string) {
