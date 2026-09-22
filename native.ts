@@ -63,6 +63,7 @@ let status: YomitanStatus = {
     error: null
 };
 let broker: ChildProcess | null = null;
+let brokerToken: string | null = null;
 let loadedExtension: Extension | null = null;
 let loadingPromise: Promise<Extension> | null = null;
 let contentScriptMonitor: NodeJS.Timeout | null = null;
@@ -122,6 +123,33 @@ function assertTrustedSender(event: IpcMainInvokeEvent) {
     if (!/^(https:\/\/(?:canary\.|ptb\.)?(?:discord|discordapp)\.com\/|chrome-extension:\/\/)/.test(url)) {
         throw new Error("Untrusted Yomitan IPC sender");
     }
+}
+
+interface YomitanProfile {
+    name: string;
+    options: unknown;
+}
+
+interface YomitanOptions {
+    profileCurrent: number;
+    profiles: YomitanProfile[];
+}
+
+async function callBroker(action: string, params: Record<string, unknown> = {}) {
+    if (status.brokerPort === null || brokerToken === null) {
+        throw new Error("Yomitan broker is not running");
+    }
+    const response = await fetch(`http://127.0.0.1:${status.brokerPort}/rpc`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${brokerToken}`
+        },
+        body: JSON.stringify({ action, ...params })
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body?.error || `Yomitan broker request failed (${response.status})`);
+    return body.result;
 }
 
 async function pathExists(path: string) {
@@ -281,6 +309,7 @@ async function stopRuntime() {
     }
     broker?.kill();
     broker = null;
+    brokerToken = null;
     rmSync(join(STAGED_EXTENSION_DIRECTORY, "bridge-config.json"), { force: true });
     status = { ...status, state: "idle", extensionId: null, extensionVersion: null, brokerPort: null, contentScripts: [] };
     persistStatus();
@@ -295,6 +324,7 @@ async function loadLocalBuild(): Promise<Extension> {
     const token = randomBytes(32).toString("base64url");
     const brokerResult = await startBroker(projectRoot, token);
     broker = brokerResult.process;
+    brokerToken = token;
     status = { ...status, brokerPort: brokerResult.port };
     await writeFile(join(STAGED_EXTENSION_DIRECTORY, "bridge-config.json"), JSON.stringify({
         protocolVersion: 1,
@@ -328,6 +358,7 @@ async function loadLocalBuild(): Promise<Extension> {
     } catch (error) {
         broker?.kill();
         broker = null;
+        brokerToken = null;
         rmSync(join(STAGED_EXTENSION_DIRECTORY, "bridge-config.json"), { force: true });
         throw error;
     }
@@ -360,6 +391,31 @@ export async function reloadLocalBuild(event: IpcMainInvokeEvent) {
         assertTrustedSender(event);
         await stopRuntime();
         await ensureLoaded();
+        return null;
+    } catch (error) {
+        return errorMessage(error);
+    }
+}
+
+export async function listYomitanProfiles(event: IpcMainInvokeEvent) {
+    assertTrustedSender(event);
+    await ensureLoaded();
+    const options: YomitanOptions = await callBroker("getYomitanOptions");
+    return {
+        current: options.profileCurrent,
+        profiles: options.profiles.map(profile => profile.name)
+    };
+}
+
+export async function switchYomitanProfile(event: IpcMainInvokeEvent, index: number) {
+    try {
+        assertTrustedSender(event);
+        await ensureLoaded();
+        const options: YomitanOptions = await callBroker("getYomitanOptions");
+        if (!Number.isInteger(index) || index < 0 || index >= options.profiles.length) {
+            throw new Error("Invalid Yomitan profile index");
+        }
+        await callBroker("setYomitanOptions", { options: { ...options, profileCurrent: index } });
         return null;
     } catch (error) {
         return errorMessage(error);
